@@ -433,7 +433,7 @@ def main():
     application.add_handler(MessageHandler(filters.Regex("^📅 Расписание$"), show_schedule))
     
     application.add_handler(CallbackQueryHandler(ask_priority, pattern="^(auto|manual)$"))
-    application.add_handler(CallbackQueryHandler(handle_task_input, pattern="^(urgent|high|medium|low)$"))
+    application.add_handler(CallbackQueryHandler(handle_task_input, pattern="^(urgent 🔴|high 🟠|medium 🟡|low ⚪)$"))
     
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_input))
 
