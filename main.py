@@ -33,53 +33,53 @@ async def init_schedule(user_id: str, days_ahead: int = 30):
         for day_offset in range(days_ahead):
             current_date = today + timedelta(days=day_offset)
             date_str = current_date.strftime("%Y-%m-%d")
-            
-            # Если расписание на эту дату уже есть - пропускаем
-            if date_str in existing_schedule:
-                continue
-                
             day_of_week = current_date.strftime("%A").lower()
-            day_schedule = {}
-
-            # 1. Блоки сна (01:00–07:30)
+            
+            # Получаем текущее расписание на день или создаем новое
+            day_schedule = existing_schedule.get(date_str, {})
+            
+            # 1. Инициализируем блоки сна (01:00–07:30), если их еще нет
             for hour in range(1, 8):
                 for minute in [0, 30]:
                     time_key = f"{hour:02d}:{minute:02d}"
-                    day_schedule[time_key] = {"type": "sleep", "task": None}
+                    if time_key not in day_schedule:
+                        day_schedule[time_key] = {"type": "sleep", "task": None}
 
-            # 2. Занятые блоки (лекции)
+            # 2. Добавляем занятые блоки (лекции) согласно дню недели
             lecture_times = []
             if day_of_week == "monday":
                 lecture_times = ["09:00", "09:30", "10:00"]
+                lecture_task = "Лекция по ML"
             elif day_of_week == "tuesday":
                 lecture_times = ["12:30", "13:00", "13:30", "14:00"]
+                lecture_task = "Лаб. по ML"
             elif day_of_week == "thursday":
                 lecture_times = ["12:30", "13:00", "13:30", "14:00"]
+                lecture_task = "Лаб. по БД"
             elif day_of_week == "friday":
                 lecture_times = ["17:30", "18:00", "18:30", "19:00"]
+                lecture_task = "Лаб. по сетям"
             
             for time in lecture_times:
-                day_schedule[time] = {
-                    "type": "lecture",
-                    "task": {
-                        "monday": "Лекция по ML",
-                        "tuesday": "Лаб. по ML",
-                        "thursday": "Лаб. по БД",
-                        "friday": "Лаб. по сетям"
-                    }[day_of_week]
-                }
+                # Обновляем только если временной блок не занят или это лекция
+                if time not in day_schedule or day_schedule[time].get("type") != "lecture":
+                    day_schedule[time] = {
+                        "type": "lecture",
+                        "task": lecture_task
+                    }
 
-            # 3. Свободные блоки (08:00-00:30)
+            # 3. Инициализируем свободные блоки (08:00-00:30), если их еще нет
             for hour in range(8, 24):
                 for minute in [0, 30]:
                     time_key = f"{hour:02d}:{minute:02d}"
                     if time_key not in day_schedule:
                         day_schedule[time_key] = {"type": "free", "task": None}
 
-            # Аккуратно обновляем только нужную дату
-            schedule_ref.child(date_str).set(day_schedule)
+            # Обновляем расписание только если оно изменилось
+            if date_str not in existing_schedule or existing_schedule[date_str] != day_schedule:
+                schedule_ref.child(date_str).set(day_schedule)
         
-    await asyncio.to_thread(sync_create_schedule)   
+    await asyncio.to_thread(sync_create_schedule)
 
 # ------------------- 2. Главное меню -------------------
 async def start(update: Update, context: CallbackContext):
