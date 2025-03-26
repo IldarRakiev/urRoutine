@@ -1,0 +1,4 @@
+# Основные зависимости
+python-telegram-bot==20.3
+firebase-admin==6.2.0
+python-dotenv==1.0.0
