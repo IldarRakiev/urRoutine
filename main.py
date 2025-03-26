@@ -113,10 +113,10 @@ async def add_task_start(update: Update, context: CallbackContext):
 
 async def ask_priority(update: Update, context: CallbackContext):
     buttons = [
-        [InlineKeyboardButton("Срочно 🔴", callback_data="urgent")],
-        [InlineKeyboardButton("Высокий 🟠", callback_data="high")],
-        [InlineKeyboardButton("Средний 🟡", callback_data="medium")],
-        [InlineKeyboardButton("Низкий ⚪", callback_data="low")]
+        [InlineKeyboardButton("Срочно 🔴", callback_data="urgent 🔴")],
+        [InlineKeyboardButton("Высокий 🟠", callback_data="high 🟠")],
+        [InlineKeyboardButton("Средний 🟡", callback_data="medium 🟡")],
+        [InlineKeyboardButton("Низкий ⚪", callback_data="low ⚪")]
     ]
     await update.callback_query.edit_message_text(
         "📌 Выберите приоритет:",
@@ -152,10 +152,10 @@ async def handle_task_input(update: Update, context: CallbackContext):
             # а например написал текст без выбора приоритета
             user_data['task_state'] = 'awaiting_priority'  # Новое состояние!
             buttons = [
-                [InlineKeyboardButton("Срочно 🔴", callback_data="urgent")],
-                [InlineKeyboardButton("Высокий 🟠", callback_data="high")],
-                [InlineKeyboardButton("Средний 🟡", callback_data="medium")],
-                [InlineKeyboardButton("Низкий ⚪", callback_data="low")]
+                [InlineKeyboardButton("Срочно 🔴", callback_data="urgent 🔴")],
+                [InlineKeyboardButton("Высокий 🟠", callback_data="high 🟠")],
+                [InlineKeyboardButton("Средний 🟡", callback_data="medium 🟡")],
+                [InlineKeyboardButton("Низкий ⚪", callback_data="low ⚪")]
             ]
             await update.message.reply_text(
                 "📌 Сначала выберите приоритет:",
