@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import asyncio
 import os, sys, logging, json
 from dotenv import load_dotenv
+from math import ceil
 
 load_dotenv()
 
@@ -24,9 +25,11 @@ PRIORITIES = {"urgent": 4, "high": 3, "medium": 2, "low": 1}
 # ------------------- 1. Инициализация расписания -------------------
 
 async def init_schedule(user_id: str, days_ahead: int = 30):
+    print("init started")
     schedule_ref = db.reference(f"schedule/{user_id}")
     
     def sync_create_schedule():
+        print("sync started")
         today = datetime.now()
         existing_schedule = schedule_ref.get() or {}
         
@@ -45,7 +48,14 @@ async def init_schedule(user_id: str, days_ahead: int = 30):
                     if time_key not in day_schedule:
                         day_schedule[time_key] = {"type": "sleep", "task": None}
 
-            # 2. Добавляем занятые блоки (лекции) согласно дню недели
+            # 2. Инициализируем свободные блоки (08:00-00:30), если их еще нет
+            for hour in [*range(8, 24), 0]:  # Добавляем 0 для 00:00-00:30
+                for minute in [0, 30]:
+                    time_key = f"{hour:02d}:{minute:02d}"
+                    if time_key not in day_schedule:
+                        day_schedule[time_key] = {"type": "free", "task": None}             
+
+            # 3. Добавляем занятые блоки (лекции) согласно дню недели
             lecture_times = []
             if day_of_week == "monday":
                 lecture_times = ["09:00", "09:30", "10:00"]
@@ -59,25 +69,17 @@ async def init_schedule(user_id: str, days_ahead: int = 30):
             elif day_of_week == "friday":
                 lecture_times = ["17:30", "18:00", "18:30", "19:00"]
                 lecture_task = "Лаб. по сетям"
+ 
             
             for time in lecture_times:
                 # Обновляем только если временной блок не занят или это лекция
-                if time not in day_schedule or day_schedule[time].get("type") != "lecture":
-                    day_schedule[time] = {
-                        "type": "lecture",
-                        "task": lecture_task
-                    }
+                day_schedule[time] = {
+                    "type": "lecture",
+                    "task": lecture_task
+                }
 
-            # 3. Инициализируем свободные блоки (08:00-00:30), если их еще нет
-            for hour in range(8, 24):
-                for minute in [0, 30]:
-                    time_key = f"{hour:02d}:{minute:02d}"
-                    if time_key not in day_schedule:
-                        day_schedule[time_key] = {"type": "free", "task": None}
-
-            # Обновляем расписание только если оно изменилось
-            if date_str not in existing_schedule or existing_schedule[date_str] != day_schedule:
-                schedule_ref.child(date_str).set(day_schedule)
+            schedule_ref.child(date_str).set(day_schedule)
+            
         
     await asyncio.to_thread(sync_create_schedule)
 
@@ -100,7 +102,6 @@ async def start(update: Update, context: CallbackContext):
 
 # ------------------- 3. Добавление задачи -------------------
 async def add_task_start(update: Update, context: CallbackContext):
-    logging.info('e')
     context.user_data['expecting_priority'] = True 
     buttons = [
         [InlineKeyboardButton("Авто", callback_data="auto")],
@@ -112,6 +113,13 @@ async def add_task_start(update: Update, context: CallbackContext):
     )
 
 async def ask_priority(update: Update, context: CallbackContext):
+
+    query = update.callback_query
+    await query.answer()
+    
+    # Сохраняем выбранный режим
+    context.user_data['task_mode'] = query.data
+
     buttons = [
         [InlineKeyboardButton("Срочно 🔴", callback_data="urgent 🔴")],
         [InlineKeyboardButton("Высокий 🟠", callback_data="high 🟠")],
@@ -128,7 +136,7 @@ async def handle_task_input(update: Update, context: CallbackContext):
     user_data = context.user_data
     
     if update.callback_query:
-        print(f"кал")
+        print(f"каллбек")
         # Обработка нажатия кнопки приоритета
         query = update.callback_query
         priority = query.data
@@ -213,54 +221,126 @@ async def handle_task_input(update: Update, context: CallbackContext):
             task_ref = db.reference(f"tasks/{user_id}").push()
             task_id = task_ref.key
             user_data['task_data']['created_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            await task_ref.set(user_data['task_data'])
+            print(user_data['task_data'])
+            task_ref.set(user_data['task_data'])
             
+            print(context.user_data.get('task_mode') )
+
             # Распределение задачи
-            result = auto_assign_task_with_priority(user_id, task_id)
-            
-            if result == "need_confirmation":
-                await update.message.reply_text(
-                    "⚠️ Не хватает места! Перенести менее важные задачи? (/yes или /no)",
-                    reply_markup=ReplyKeyboardMarkup([['/yes', '/no']], resize_keyboard=True)
-                )
-                user_data['pending_task'] = task_id
+            if context.user_data.get('task_mode') == "manual":
+                user_data.pop('task_state', None)
+                user_data.pop('selected_priority', None)
+                user_data['pending_task'] = task_id  # Сохраняем ID для ручного режима
+                await manual_task_assignment(update, context, user_id, task_id)
             else:
-                await update.message.reply_text(f"✅ Задача «{user_data['task_data']['name']}» добавлена!")
+                result = auto_assign_task_with_priority(user_id, task_id)
+                if result == "need_confirmation":
+                    await update.message.reply_text(
+                        "⚠️ Не хватает места! Перенести менее важные задачи? (/yes или /no)",
+                        reply_markup=ReplyKeyboardMarkup([['/yes', '/no']], resize_keyboard=True)
+                    )
+                    user_data['pending_task'] = task_id
+                else:
+                    await update.message.reply_text(f"✅ Задача «{user_data['task_data']['name']}» добавлена!")
+            # =============================================
             
-            # Очистка временных данных
-            user_data.pop('task_state', None)
-            user_data.pop('task_data', None)
-            user_data.pop('selected_priority', None)
+                # Очистка временных данных (общая для обоих режимов)
+                user_data.pop('task_data', None)
+                user_data.pop('task_state', None)
+                user_data.pop('selected_priority', None)
             
         else:
            print(f"иди нахуй))))")
 
 
-# ------------------- 4. Удаление задачи -------------------
-async def delete_task(update: Update, context: CallbackContext):
-    task_name = " ".join(context.args)
-    user_id = str(update.message.chat.id)
-    tasks_ref = db.reference(f"tasks/{user_id}")
+async def manual_task_assignment(update: Update, context: CallbackContext, user_id: str, task_id: str):
+    """Функция для ручного добавления временных блоков"""
+    user_data = context.user_data
     
-    tasks = tasks_ref.get()
-    if not tasks:
-        await update.message.reply_text("❌ Нет задач для удаления.")
-        return
+    # Рассчитываем необходимое количество блоков (по 30 минут)
+    blocks_needed = ceil(user_data['task_data']['time_required'] * 2)
+    user_data['blocks_remaining'] = blocks_needed
+    user_data['selected_blocks'] = []
+    user_data['task_state'] = 'awaiting_manual_blocks'
+    
+    await update.message.reply_text(
+        f"🕒 Требуется выбрать {blocks_needed} получасовых блоков.\n"
+        "Введите первый блок в формате ДД.ММ.ГГГГ ЧЧ:ММ (например: 25.12.2024 14:00):"
+    )
 
-    for task_id, task_data in tasks.items():
-        if task_data["name"] == task_name:
-            # Освобождаем блоки
-            for block in task_data.get("assigned_blocks", []):
-                db.reference(f"schedule/{user_id}/{block['date']}/{block['time']}").update({"task": None})
-            # Удаляем задачу
-            tasks_ref.child(task_id).delete()
-            await update.message.reply_text(f"✅ Задача «{task_name}» удалена!")
+
+async def handle_manual_blocks(update: Update, context: CallbackContext):
+    """Обработка ручного ввода временных блоков"""
+    user_id = str(update.effective_user.id)
+    user_data = context.user_data
+    text = update.message.text
+    
+    try:
+        # Парсим введенное время
+        block_time = datetime.strptime(text, "%d.%m.%Y %H:%M")
+        block_str = block_time.strftime("%Y-%m-%d %H:%M")
+        
+        # Проверяем доступность блока (ваша реализация)
+        if not is_time_block_available(user_id, block_str):
+            await update.message.reply_text("❌ Этот блок уже занят. Выберите другой:")
             return
+        
+        # Добавляем блок
+        user_data['selected_blocks'].append(block_str)
+        user_data['blocks_remaining'] -= 1
+        
+        # Если нужно еще блоки
+        if user_data['blocks_remaining'] > 0:
+            await update.message.reply_text(
+                f"🕒 Осталось выбрать {user_data['blocks_remaining']} блоков.\n"
+                "Введите следующий блок:"
+            )
+        else:
+            # Все блоки выбраны - сохраняем
+            schedule_ref = db.reference(f"schedule/{user_id}")
+            
+            for block in user_data['selected_blocks']:
+                date_str, time_str = block.split(' ')
+                time_key = time_str  # HH:MM
+                
+                schedule_ref.child(date_str).child(time_key).update({
+                    'task_id': user_data['pending_task'],
+                    'task': user_data['task_data']['name'],
+                    'type': 'task'
+                })
+            
+            await update.message.reply_text(
+                f"✅ Задача «{user_data['task_data']['name']}» запланирована!\n"
+                f"Выбранные блоки: {', '.join(user_data['selected_blocks'])}"
+            )
+            
+            # Очистка данных
+            for key in ['task_state', 'selected_blocks', 'blocks_remaining', 'pending_task']:
+                user_data.pop(key, None)
+                
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат. Используйте ДД.ММ.ГГГГ ЧЧ:ММ")   
 
-    await update.message.reply_text("❌ Задача не найдена.")
 
-# ------------------- 5. Автоматическое распределение с переносом -------------------
+def is_time_block_available(user_id: str, block_time_str: str) -> bool:
+    """Проверяет доступность временного блока"""
+    date_str, time_str = block_time_str.split(' ')
+    time_key = time_str # HH:MM
+    
+    schedule_ref = db.reference(f"schedule/{user_id}/{date_str}")
+
+    print(db.reference(f"schedule/{user_id}/{date_str}").get())
+
+    day_schedule = schedule_ref.get() or {}
+    
+    print(day_schedule.get(time_key, {}).get('type'))
+
+    return day_schedule.get(time_key, {}).get('type') == 'free'        
+
+
+# ------------------- 4. Автоматическое распределение с переносом -------------------
 async def auto_assign_task_with_priority(user_id: str, task_id: str):
+    
     task = db.reference(f"tasks/{user_id}/{task_id}").get()
     time_needed = task["time_required"] * 2  # Блоки по 30 мин
     deadline = datetime.strptime(task["deadline"], "%Y-%m-%d")
@@ -274,7 +354,7 @@ async def auto_assign_task_with_priority(user_id: str, task_id: str):
         free_blocks = [
             time for time, block in day_schedule.items()
             if block["type"] == "free" and not block.get("task")
-        ][:4]  # Не более 4 блоков в день
+        ][:6]  # Не более 6 блоков в день
 
         for time in free_blocks:
             assigned_blocks.append({"date": date_str, "time": time})
@@ -294,7 +374,8 @@ async def auto_assign_task_with_priority(user_id: str, task_id: str):
         db.reference(f"schedule/{user_id}/{block['date']}/{block['time']}").update({"task": task_id})
     return "assigned"
 
-# ------------------- 6. Перенос задач -------------------
+
+# ------------------- 5. Перенос задач -------------------
 async def reschedule_low_priority_tasks(user_id: str, new_task_id: str, blocks_needed: int):
     tasks_ref = db.reference(f"tasks/{user_id}")
     new_task_priority = tasks_ref.child(new_task_id).get()["priority"]
@@ -308,7 +389,31 @@ async def reschedule_low_priority_tasks(user_id: str, new_task_id: str, blocks_n
                 blocks_needed -= len(task_data["assigned_blocks"])
                 if blocks_needed <= 0:
                     break
-                
+
+
+# ------------------- 6. Удаление задачи -------------------
+async def delete_task(update: Update, context: CallbackContext):
+    task_name = " ".join(context.args)
+    user_id = str(update.message.chat.id)
+    tasks_ref = db.reference(f"tasks/{user_id}")
+    
+    tasks = tasks_ref.get()
+    if not tasks:
+        await update.message.reply_text("❌ Нет задач для удаления.")
+        return
+    
+    for task_id, task_data in tasks.items():
+        print(task_id, task_data)
+        if task_data["name"] == task_name:
+            # Освобождаем блоки
+            for block in task_data.get("assigned_blocks", []):
+                db.reference(f"schedule/{user_id}/{block['date']}/{block['time']}").update({"task": None})
+            # Удаляем задачу
+            tasks_ref.child(task_id).delete()
+            await update.message.reply_text(f"✅ Задача «{task_name}» удалена!")
+            return
+
+    await update.message.reply_text("❌ Задача не найдена.")                
                 
 async def cancel_task(update: Update, context: CallbackContext):
     if 'task_state' in context.user_data:
@@ -435,6 +540,12 @@ def main():
     application.add_handler(CallbackQueryHandler(ask_priority, pattern="^(auto|manual)$"))
     application.add_handler(CallbackQueryHandler(handle_task_input, pattern="^(urgent 🔴|high 🟠|medium 🟡|low ⚪)$"))
     
+    application.add_handler(MessageHandler(
+    filters.TEXT & ~filters.COMMAND & 
+    (filters.Regex(r"\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}") | 
+     filters.Regex(r"^\d{1,2}\.\d{1,2}\.\d{4} \d{1,2}:\d{2}$")),
+    handle_manual_blocks
+    ))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_input))
 
     application.run_polling()
